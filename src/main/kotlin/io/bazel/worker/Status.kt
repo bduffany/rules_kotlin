@@ -20,5 +20,6 @@ package io.bazel.worker
 /** Status for the Result of Work. */
 enum class Status(val exit: Int) {
   ERROR(1),
+  INTERNAL_ERROR(2),
   SUCCESS(0);
 }
