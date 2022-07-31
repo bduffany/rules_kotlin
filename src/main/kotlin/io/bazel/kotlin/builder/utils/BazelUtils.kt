@@ -17,7 +17,10 @@ package io.bazel.kotlin.builder.utils
 
 import java.io.File
 import java.io.FileInputStream
-import java.nio.charset.Charset
+import java.nio.charset.StandardCharsets.UTF_8
+import java.nio.file.FileSystems
+import java.nio.file.Files
+import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.Collections
 
@@ -28,31 +31,43 @@ object BazelRunFiles {
   /**
    * Set depending on --enable_runfiles, which defaults to false on Windows and true otherwise.
    */
-  private val manifestFile: String? =
-      if (isWindows) {
-        System.getenv("RUNFILES_MANIFEST_FILE")
-      } else null
+  private val manifestFilePath: String? =
+    if (isWindows) {
+      System.getenv("RUNFILES_MANIFEST_FILE")
+    } else null
 
   private val javaRunFiles = Paths.get(System.getenv("JAVA_RUNFILES"))
 
   private val runfiles by lazy {
     with(mutableMapOf<String, String>()) {
-      FileInputStream(manifestFile)
-          .bufferedReader(Charset.forName("UTF-8"))
-          .lines()
-          .forEach { it ->
-            val line = it.trim { it <= ' ' }
-            if (!line.isEmpty()) {
-              // TODO(bazel-team): This is buggy when the path contains spaces, we should fix the manifest format.
-              line.split(" ").also {
-                check(it.size == 2) { "RunFiles manifest entry $line contains more than one space" }
-                put(it[0], it[1])
-              }
-            }
-          }
-      Collections.unmodifiableMap(this)
+      manifestFilePath
+        ?.let(::FileInputStream)
+        ?.bufferedReader(UTF_8)
+        ?.lines()
+        ?.map(String::trim)
+        ?.filter(String::isNotEmpty)
+        ?.forEach { line ->
+          put(
+            line.substringBeforeLast(" "),
+            line.substringAfterLast(" ")
+          )
+        }
+      let(Collections::unmodifiableMap)
     }
   }
+
+  @JvmStatic
+  fun resolveFromProperty(name: String): Path =
+    System.getProperty(name)
+      ?.let { path ->
+        runfiles[path]
+          ?.run(FileSystems.getDefault()::getPath)
+          ?: javaRunFiles.resolve(path).takeIf(Files::exists)
+          ?: FileSystems.getDefault().getPath(path).takeIf(Files::exists)
+          ?: error("$name for $path doesn't exist")
+      }
+      ?: error("$name is undefined")
+
 
   /**
    * Resolve a run file on windows or *nix.
@@ -60,19 +75,14 @@ object BazelRunFiles {
   @JvmStatic
   fun resolveVerified(vararg path: String): File {
     check(path.isNotEmpty())
-    val fromManifest = manifestFile?.let { mf ->
+    val fromManifest = manifestFilePath?.let { mf ->
       path.joinToString("/").let { rfPath ->
         // trim off the external/ prefix if it is present.
-        val trimmedPath =
-            if (rfPath.startsWith("external/")) {
-              rfPath.replaceFirst("external/", "")
-            } else {
-              rfPath
-            }
+        val trimmedPath = rfPath.removePrefix("external/")
         File(
-            checkNotNull(runfiles[trimmedPath]) {
-              "runfile manifest $mf did not contain path mapping for $rfPath"
-            }
+          checkNotNull(runfiles[trimmedPath]) {
+            "runfile manifest $mf did not contain path mapping for $rfPath"
+          }
         )
       }.also {
         check(it.exists()) { "file $it resolved from runfiles did not exist" }
